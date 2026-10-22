@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Crystal Front</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root { --panel: rgba(28, 25, 48, 0.88); --edge: rgba(255, 255, 255, 0.12); --text: #ece7dc; --dim: #a7a1b8; --accent: #22d3ee; --gold: #fde68a; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #2b2747; color: var(--text); font-family: 'Rajdhani', system-ui, sans-serif; user-select: none; }
+  canvas#game { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+  body.targeting canvas#game { cursor: crosshair; }
+  .hidden { display: none !important; }
+
+  /* menu */
+  #menu, #end { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; z-index: 20;
+    background: radial-gradient(circle at 50% 40%, #463d78 0%, #221d3b 70%); }
+  #end { background: rgba(20, 17, 36, 0.6); }
+  .card { background: var(--panel); border: 1px solid var(--edge); border-radius: 14px; padding: 32px 40px; text-align: center; min-width: 340px; box-shadow: 0 20px 60px rgba(0,0,0,.4); }
+  h1 { font-size: 56px; margin: 0; letter-spacing: 4px; color: #fff; text-shadow: 0 0 24px rgba(34,211,238,.5); }
+  h1 span { color: var(--accent); }
+  .sub { color: var(--dim); margin: 4px 0 26px; font-size: 18px; }
+  .row { display: flex; gap: 8px; justify-content: center; margin: 10px 0 22px; }
+  button { font-family: inherit; cursor: pointer; }
+  .big { display: block; width: 100%; margin: 8px 0; padding: 12px; font-size: 20px; font-weight: 700; letter-spacing: 1px; border-radius: 8px;
+    border: 1px solid var(--edge); background: #3b3463; color: var(--text); }
+  .big:hover:not(:disabled) { background: #4b4380; }
+  .big.primary { background: #0e7490; border-color: #22d3ee; }
+  .big.primary:hover { background: #0891b2; }
+  .big:disabled { opacity: .45; cursor: default; }
+  .pill { padding: 6px 16px; border-radius: 20px; border: 1px solid var(--edge); background: transparent; color: var(--text); font-size: 16px; font-weight: 600; }
+  .pill.on { background: var(--accent); color: #102030; border-color: var(--accent); }
+  .label { color: var(--dim); font-size: 15px; }
+  #lobby { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; z-index: 20;
+    background: radial-gradient(circle at 50% 40%, #463d78 0%, #221d3b 70%); }
+  .field { width: 100%; padding: 10px 12px; font-family: inherit; font-size: 18px; font-weight: 600; color: var(--text);
+    background: #1f1b36; border: 1px solid var(--edge); border-radius: 8px; outline: none; }
+  .field:focus { border-color: var(--accent); }
+  .field.code { text-transform: uppercase; letter-spacing: 6px; text-align: center; font-size: 22px; }
+  .section { color: var(--dim); font-size: 14px; letter-spacing: 2px; text-transform: uppercase; margin: 22px 0 4px; border-top: 1px solid var(--edge); padding-top: 14px; }
+  .joinrow { display: flex; gap: 8px; align-items: center; }
+  .joinrow .big { width: 110px; margin: 8px 0; }
+  #menuerr { color: #fca5a5; min-height: 22px; margin-top: 8px; font-size: 16px; }
+  .coderow { display: flex; align-items: center; justify-content: center; gap: 14px; margin: 6px 0 20px; }
+  #lobbycode { font-size: 48px; font-weight: 700; letter-spacing: 10px; color: var(--accent); }
+  #slots { display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; text-align: left; }
+  .slot { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 8px; background: #2e2850; border: 1px solid var(--edge); font-size: 18px; font-weight: 600; }
+  .slot.open { color: var(--dim); }
+  .slot .sname { flex: 1; }
+  #waiting { margin: 10px 0; }
+  #endtitle { font-size: 64px; margin: 0 0 18px; letter-spacing: 6px; }
+  #endtitle.win { color: #86efac; } #endtitle.lose { color: #fca5a5; }
+
+  /* hud */
+  #topbar { position: fixed; top: 10px; right: 12px; display: flex; gap: 18px; padding: 6px 16px; background: var(--panel); border: 1px solid var(--edge); border-radius: 10px; font-size: 20px; font-weight: 700; z-index: 5; }
+  #topbar .gem { color: #5eead4; }
+  #topbar .dim { color: var(--dim); font-weight: 600; }
+  #message { position: fixed; top: 64px; left: 0; right: 0; text-align: center; font-size: 24px; font-weight: 700; text-shadow: 0 2px 6px #000; pointer-events: none; opacity: 0; z-index: 5; }
+  #bottom { position: fixed; left: 0; right: 0; bottom: 0; display: flex; align-items: flex-end; gap: 10px; padding: 10px; pointer-events: none; z-index: 5; }
+  #bottom > * { pointer-events: auto; background: var(--panel); border: 1px solid var(--edge); border-radius: 10px; }
+  #minimap { width: 200px; height: 200px; display: block; }
+  #panel { flex: 1; max-width: 520px; min-height: 120px; padding: 12px 16px; margin: 0 auto; }
+  #panel .title { font-size: 22px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+  #panel .title small { color: var(--dim); font-size: 16px; font-weight: 600; }
+  .swatch { width: 14px; height: 14px; border-radius: 3px; display: inline-block; }
+  .stat { color: var(--dim); font-size: 16px; margin-top: 4px; }
+  .hint { color: var(--dim); font-size: 16px; padding-top: 36px; text-align: center; }
+  .hpbar { height: 7px; background: #111; border-radius: 4px; overflow: hidden; margin-top: 6px; }
+  .hpbar > div { height: 100%; }
+  .queue { display: flex; gap: 6px; margin-top: 10px; }
+  .qi { position: relative; padding: 5px 10px; border: 1px solid var(--edge); border-radius: 6px; font-size: 14px; font-weight: 600; cursor: pointer; overflow: hidden; background: #2e2850; }
+  .qi:hover { border-color: #f87171; }
+  .qp { position: absolute; left: 0; bottom: 0; height: 3px; background: var(--accent); }
+  .multi { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+  .mi { width: 46px; padding: 3px; border: 1px solid var(--edge); border-radius: 5px; font-size: 12px; text-align: center; cursor: pointer; background: #2e2850; }
+  .mi .hpbar { height: 4px; margin-top: 2px; }
+  #commands { width: 270px; min-height: 120px; padding: 8px; display: grid; grid-template-columns: 1fr 1fr; gap: 6px; align-content: start; }
+  .cmd { position: relative; text-align: left; padding: 7px 8px 6px; border-radius: 7px; border: 1px solid var(--edge); background: #3b3463; color: var(--text); font-size: 15px; font-weight: 600; line-height: 1.1; }
+  .cmd:hover { background: #4b4380; border-color: var(--accent); }
+  .cmd.disabled { opacity: .45; }
+  .cmd .hk { position: absolute; top: 4px; right: 6px; color: var(--gold); font-size: 13px; }
+  .cmd .lbl { display: block; padding-right: 14px; }
+  .cmd .cost { display: block; color: #5eead4; font-size: 13px; margin-top: 2px; }
+  #selbox { position: fixed; border: 1px solid #4ade80; background: rgba(74, 222, 128, 0.12); pointer-events: none; display: none; z-index: 4; }
+  #help { position: fixed; top: 60px; left: 12px; width: 300px; padding: 12px 16px; background: var(--panel); border: 1px solid var(--edge); border-radius: 10px; font-size: 15px; z-index: 6; line-height: 1.5; }
+  #help b { color: var(--gold); }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script type="importmap">
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js" } }
+</script>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div id="selbox"></div>
+
+<div id="hud" class="hidden">
+  <div id="topbar"><span><span class="gem">◆</span> <span id="crystals">0</span></span><span class="dim">POP <span id="pop">0</span></span><span class="dim" id="clock">0:00</span></div>
+  <div id="message"></div>
+  <div id="help" class="hidden">
+    <b>Left-click / drag</b> select · <b>Shift</b> add<br>
+    <b>Double-click</b> select type on screen<br>
+    <b>Right-click</b> move / attack / mine / build<br>
+    <b>A</b> + click attack-move · <b>S</b> stop<br>
+    <b>B</b> barracks · <b>T</b> turret (workers)<br>
+    <b>Q W E</b> train units · click queue to cancel<br>
+    <b>Ctrl+1-9</b> set group · <b>1-9</b> recall<br>
+    <b>Space</b> center · <b>Tab</b> idle worker<br>
+    <b>Arrows / screen edge</b> pan · <b>Wheel</b> zoom
+  </div>
+  <div id="bottom">
+    <canvas id="minimap" width="200" height="200"></canvas>
+    <div id="panel"></div>
+    <div id="commands"></div>
+  </div>
+</div>
+
+<div id="menu">
+  <div class="card">
+    <h1>CRYSTAL <span>FRONT</span></h1>
+    <div class="sub">a tiny sci-fi RTS · destroy every enemy HQ</div>
+    <input id="name" class="field" maxlength="16" placeholder="Your name" autocomplete="off">
+    <div class="section">Skirmish</div>
+    <div class="row">
+      <button class="pill on" data-bots="1">1 bot</button>
+      <button class="pill" data-bots="2">2 bots</button>
+      <button class="pill" data-bots="3">3 bots</button>
+    </div>
+    <button class="big primary" id="play">Play vs Bots</button>
+    <div class="section">Multiplayer · up to 4</div>
+    <button class="big" id="host">Host Game</button>
+    <div class="joinrow">
+      <input id="code" class="field code" maxlength="5" placeholder="CODE" autocomplete="off">
+      <button class="big" id="join">Join</button>
+    </div>
+    <div id="menuerr"></div>
+  </div>
+</div>
+
+<div id="lobby" class="hidden">
+  <div class="card">
+    <div class="label">Game code — share it with your friends</div>
+    <div class="coderow"><span id="lobbycode"></span><button class="pill" id="copy">Copy</button></div>
+    <div id="slots"></div>
+    <button class="big primary" id="start">Start Game</button>
+    <div id="waiting" class="label">Waiting for the host to start…</div>
+    <button class="big" id="leave">Leave</button>
+  </div>
+</div>
+
+<div id="end" class="hidden">
+  <div class="card">
+    <div id="endtitle"></div>
+    <button class="big primary" id="again">Main Menu</button>
+    <button class="big" id="spectate">Keep Watching</button>
+  </div>
+</div>
+
+<script type="module" src="src/main.js"></script>
+</body>
+</html>

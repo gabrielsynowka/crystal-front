@@ -47,7 +47,8 @@ function startClient(localId, send) {
   ui.input = input;
   view.onEvent = (ev) => {
     ui.onEvent(ev);
-    if (ev.e === 'shot') {
+    if (ev.e === 'charge') renderer.charge(ev);
+    else if (ev.e === 'shot') {
       renderer.shot(ev);
       if (SHOT_SFX[ev.k]) audio.at(SHOT_SFX[ev.k], ev.x, ev.z, { gap: ev.k === 'soldier' ? 0.07 : 0.12 });
     } else if (ev.e === 'death') {

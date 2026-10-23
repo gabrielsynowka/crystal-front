@@ -13,7 +13,16 @@ const MAT = {
 };
 const TEAM = TEAM_COLORS.map((c) => M(c, { emissive: c, emissiveIntensity: 0.25 }));
 const NEUTRAL = M(0x9ca3af);
-const SHOOT_TIME = 0.9; // seconds the fire animation is squeezed into
+
+// Arm bone directions in the character's own frame (faces +z, its right side is -x).
+// LOW: rifle carried pointing forward-down. AIM: rifle raised to the shoulder, pointing at the target.
+const v3 = (x, y, z) => new THREE.Vector3(x, y, z).normalize();
+const ARM_POSE = {
+  low: { RightArm: v3(-0.2, -0.95, 0.2), RightForeArm: v3(0.3, -0.25, 0.9), LeftArm: v3(0.1, -0.85, 0.35), LeftForeArm: v3(-0.5, -0.15, 0.85) },
+  aim: { RightArm: v3(-0.25, -0.85, 0.35), RightForeArm: v3(0.35, 0.25, 0.9), LeftArm: v3(0.1, -0.7, 0.55), LeftForeArm: v3(-0.55, 0.3, 0.75) },
+};
+const BONE_UP = new THREE.Vector3(0, 1, 0);
+const _q = new THREE.Quaternion(), _q2 = new THREE.Quaternion(), _v = new THREE.Vector3(), _v2 = new THREE.Vector3();
 
 function box(w, h, d, mat, x = 0, y = 0, z = 0) {
   const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
@@ -289,7 +298,7 @@ export class Renderer {
     root.add(bar);
     root.position.set(e.x, 0, e.z);
     this.scene.add(root);
-    return { root, model: g, ring, bar, fg, kind: T.kind, phase: Math.random() * 10, mixer: inst?.mixer, actions: inst?.actions, shootT: 0, state: '' };
+    return { root, model: g, ring, bar, fg, kind: T.kind, phase: Math.random() * 10, ...inst, aimW: 0, kick: 0, recoil: 0 };
   }
 
   sync(view, selected, dt) {
@@ -299,13 +308,18 @@ export class Renderer {
       if (!m) { m = this.makeMesh(e); this.meshes.set(id, m); }
       const T = TYPES[e.type];
       m.root.position.set(e.x, 0, e.z);
-      // The "Side Shot" clip fires to the character's left, so turn a quarter while shooting to aim at the target.
-      if (m.kind !== 'resource') m.model.rotation.y = e.rot + (m.state === 'shoot' ? -Math.PI / 2 : 0);
+      if (m.kind !== 'resource') m.model.rotation.y = e.rot;
       let y = 0;
       if (e.type === 'worker' || e.type === 'tank') y = 0.15 + Math.sin(this.time * 3 + m.phase) * 0.08;
       else if (m.kind === 'unit' && e.b === 1 && !m.mixer) y = Math.abs(Math.sin(this.time * 11 + m.phase)) * 0.12;
       m.model.position.y = y;
       if (m.mixer) this.animate(m, e, dt);
+      if (m.barrel) {
+        // Barrel slides back on firing and eases forward again (barrel points -x in its own frame).
+        m.recoil = Math.max(0, m.recoil - dt * 2.2);
+        m.barrel.position.x = m.barrelRest.x + 0.08 * Math.sin(Math.min(1, m.recoil) * Math.PI / 2);
+      }
+      if (m.cargo) m.cargo.visible = e.a > 0;
       if (m.kind === 'building') m.model.scale.y = e.a >= 1 ? 1 : 0.15 + 0.85 * e.a;
       if (e.type === 'crystal') m.model.scale.setScalar(0.55 + 0.45 * Math.min(1, e.hp / TYPES.crystal.amount));
 
@@ -332,29 +346,57 @@ export class Renderer {
     this.renderer.render(this.scene, this.camera);
   }
 
-  // Rigged infantry: walk while moving, crouch-and-fire on each shot, otherwise hold the first walk frame.
+  // Rigged infantry: legs from the walk clip; arms and rifle posed in code (carry, aim, recoil).
   animate(m, e, dt) {
-    const A = m.actions;
-    m.shootT = Math.max(0, m.shootT - dt);
-    const want = m.shootT > 0 && A.shoot ? 'shoot' : e.b === 1 ? 'walk' : 'idle';
-    if (want !== m.state || m.restart) {
-      m.restart = false;
-      if (want === 'shoot') {
-        A.walk.stop();
-        A.shoot.reset();
-        A.shoot.setLoop(THREE.LoopOnce, 1);
-        A.shoot.clampWhenFinished = true;
-        A.shoot.timeScale = A.shoot.getClip().duration / SHOOT_TIME;
-        A.shoot.play();
-      } else {
-        if (A.shoot) A.shoot.stop();
-        A.walk.play();
-      }
-      m.state = want;
-    }
-    A.walk.timeScale = want === 'walk' ? 1.4 : 0;
-    if (want === 'idle') A.walk.time = 0;
+    const walk = m.actions.walk;
+    walk.timeScale = e.b === 1 ? 1.4 : 0;
+    if (e.b !== 1) walk.time = 0;
     m.mixer.update(dt);
+    const engaged = e.b === 3 || m.kick > 0;
+    m.aimW += ((engaged ? 1 : 0) - m.aimW) * Math.min(1, dt * 8);
+    m.kick = Math.max(0, m.kick - dt * 5);
+    if (m.bones.RightArm) this.poseRifleman(m);
+  }
+
+  poseRifleman(m) {
+    m.root.updateMatrixWorld(true);
+    const objQ = m.model.getWorldQuaternion(_q2);
+    for (const name of ['RightArm', 'RightForeArm', 'LeftArm', 'LeftForeArm']) {
+      const bone = m.bones[name];
+      if (!bone) continue;
+      _v.copy(ARM_POSE.low[name]).lerp(ARM_POSE.aim[name], m.aimW).normalize().applyQuaternion(objQ); // world direction
+      bone.parent.getWorldQuaternion(_q).invert();
+      bone.quaternion.setFromUnitVectors(BONE_UP, _v.applyQuaternion(_q));
+      bone.updateMatrixWorld(true);
+    }
+    if (!m.weapon) return;
+    // Rifle sits at the right hand, pointing along the body: pitched down when carried, level when aiming.
+    m.bones.RightHand.getWorldPosition(_v2);
+    m.model.worldToLocal(_v2);
+    const k = Math.sin(Math.min(1, m.kick) * Math.PI / 2);
+    m.weapon.position.copy(_v2);
+    m.weapon.position.z -= 0.1 * k;
+    m.weapon.rotation.set(0.5 * (1 - m.aimW) - 0.18 * k, 0, 0);
+  }
+
+  // World position of a unit's gun muzzle, if it has one.
+  muzzleOf(m, out) {
+    if (m.muzzle) return m.muzzle.getWorldPosition(out);
+    if (m.weapon) return m.weapon.localToWorld(out.set(0, 0.1, 0.1 + m.weaponLength * 0.5));
+    return null;
+  }
+
+  // Tank/turret: a glow builds at the muzzle just before the shot.
+  charge(ev) {
+    const m = this.meshes.get(ev.a);
+    if (!m || !m.muzzle) return;
+    const glow = new THREE.Mesh(this.fxGeo.sphere, new THREE.MeshBasicMaterial({ color: 0xffd27a, transparent: true, depthWrite: false }));
+    const dur = Math.max(0.12, ev.t);
+    this.addFx(glow, dur, (g, t) => {
+      m.muzzle.getWorldPosition(g.position);
+      g.scale.setScalar(0.08 + 0.32 * t * t);
+      g.material.opacity = 0.35 + 0.6 * t;
+    });
   }
 
   // ---------- effects ----------
@@ -375,13 +417,21 @@ export class Renderer {
 
   shot(ev) {
     const shooter = this.meshes.get(ev.a);
-    if (shooter && shooter.actions && shooter.actions.shoot) { shooter.shootT = SHOOT_TIME; shooter.restart = true; }
-    const from = new THREE.Vector3(ev.x, ev.k === 'turret' ? 1.3 : ev.k === 'tank' ? 1.4 : 1.0, ev.z);
+    let from = new THREE.Vector3(ev.x, ev.k === 'turret' ? 1.3 : ev.k === 'tank' ? 1.4 : 1.0, ev.z);
+    if (shooter) {
+      shooter.kick = 1;
+      shooter.aimW = 1;
+      shooter.recoil = 1;
+      shooter.root.updateMatrixWorld(true);
+      if (this.muzzleOf(shooter, _v)) from = _v.clone();
+    }
+    const muzzled = !!(shooter && (shooter.muzzle || shooter.weapon));
     const to = new THREE.Vector3(ev.tx, 0.9, ev.tz);
     const dir = to.clone().sub(from);
     const len = dir.length();
     dir.normalize();
-    from.addScaledVector(dir, Math.min(ev.k === 'tank' ? 2.0 : 0.6, len * 0.3));
+    if (!muzzled) from.addScaledVector(dir, Math.min(ev.k === 'tank' ? 2.0 : 0.6, len * 0.3));
+    if (muzzled && ev.k !== 'worker') this.explosion(from.x, from.z, ev.k === 'tank' ? 0.7 : 0.3, 0xfff1a8, 0.08, from.y);
     to.addScaledVector(dir, -Math.min(ev.tr || 0.5, len * 0.3) * 0.6);
     if (ev.k === 'tank') {
       const shell = new THREE.Mesh(this.fxGeo.sphere, new THREE.MeshBasicMaterial({ color: 0xffb347 }));
@@ -406,9 +456,9 @@ export class Renderer {
     this.addFx(beam, ev.k === 'ranger' ? 0.15 : 0.08, (m, t) => { m.material.opacity = 1 - t; });
   }
 
-  explosion(x, z, size, color = 0xff8c42, life = 0.45) {
+  explosion(x, z, size, color = 0xff8c42, life = 0.45, y = size * 0.4) {
     const m = new THREE.Mesh(this.fxGeo.sphere, new THREE.MeshBasicMaterial({ color, transparent: true, depthWrite: false }));
-    m.position.set(x, size * 0.4, z);
+    m.position.set(x, y, z);
     this.addFx(m, life, (mm, t) => {
       mm.scale.setScalar(size * (0.3 + t));
       mm.material.opacity = 1 - t;

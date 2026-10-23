@@ -4,17 +4,20 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
 import { TEAM_COLORS } from './config.js';
 
-// size: target height (h) or largest footprint side (w) in world units; yaw fixes the model's facing to +z.
+// h: target height / w: largest footprint side, in world units; yaw fixes the model's facing to +z.
+// muzzle: barrel tip in the barrel mesh's own coordinates (for recoil models).
 const MODELS = {
   worker: { h: 1.5, yaw: 0 },
-  soldier: { h: 2.0, yaw: 0, anim: true },
-  ranger: { h: 2.0, yaw: 0, anim: true },
-  tank: { w: 3.3, yaw: Math.PI / 2 },
+  soldier: { h: 2.0, yaw: 0, rigged: true, weapon: 'rifle' },
+  ranger: { h: 2.0, yaw: 0, rigged: true, weapon: 'sniper' },
+  tank: { w: 3.3, yaw: Math.PI / 2, muzzle: [-0.49, 0.145, 0] },
   hq: { w: 7.4, yaw: 0 },
   barracks: { w: 5.6, yaw: 0 },
-  turret: { w: 2.9, yaw: Math.PI / 2 },
+  turret: { w: 2.9, yaw: Math.PI / 2, muzzle: [-0.49, 0.255, 0] },
   crystal: { w: 2.8, yaw: 0, neutral: true },
   rock: { w: 4.6, yaw: 0, neutral: true },
+  rifle: { w: 1.0, yaw: 0, prop: true },
+  sniper: { w: 1.45, yaw: 0, prop: true },
 };
 
 const loaded = {}; // type -> { template, clips }
@@ -26,15 +29,9 @@ export async function loadAssets(onProgress) {
   const types = Object.keys(MODELS);
   let done = 0;
   await Promise.all(types.map(async (type) => {
-    const cfg = MODELS[type];
     try {
       const gltf = await loader.loadAsync(new URL(type + '.glb', base).href);
-      const clips = { walk: gltf.animations[0] };
-      if (cfg.anim) {
-        const a = await loader.loadAsync(new URL(type + '_anim.glb', base).href);
-        clips.shoot = a.animations[0];
-      }
-      loaded[type] = { template: normalize(gltf.scene, cfg), clips };
+      loaded[type] = { template: normalize(gltf.scene, MODELS[type]), clips: { walk: gltf.animations[0] } };
     } catch (err) {
       console.warn('Model failed, using placeholder:', type, err);
     }
@@ -60,12 +57,21 @@ function normalize(scene, cfg) {
     m.receiveShadow = true;
     if (m.material) { m.material.metalness = 0; m.material.roughness = Math.max(0.55, m.material.roughness ?? 1); }
   });
+  if (cfg.muzzle) {
+    const barrel = scene.getObjectByName('barrel');
+    if (barrel) {
+      const muzzle = new THREE.Object3D();
+      muzzle.name = 'muzzle';
+      muzzle.position.fromArray(cfg.muzzle);
+      barrel.add(muzzle);
+    }
+  }
   const outer = new THREE.Group();
   outer.add(inner);
   return outer;
 }
 
-// The concept art paints team accents blue; recolor strongly blue texels to the team colour.
+// The concept art paints team accents blue; recolor steel-blue texels to the team colour.
 function teamMaterial(mat, team) {
   const key = mat.uuid + ':' + team;
   let m = teamMats.get(key);
@@ -86,21 +92,51 @@ function teamMaterial(mat, team) {
   return m;
 }
 
-export function hasModel(type) { return !!loaded[type]; }
+function tint(object, team) {
+  object.traverse((m) => { if (m.isMesh) m.material = teamMaterial(m.material, team); });
+}
 
-// Returns { object, mixer?, actions? } for one entity.
+// Returns { object, mixer?, actions?, bones?, weapon?, barrel?, muzzle?, cargo? } for one entity.
 export function instantiate(type, team) {
   const L = loaded[type];
   if (!L) return null;
   const cfg = MODELS[type];
-  const object = cfg.anim ? SkeletonUtils.clone(L.template) : L.template.clone(true);
-  if (!cfg.neutral && team >= 0) {
-    object.traverse((m) => { if (m.isMesh) m.material = teamMaterial(m.material, team); });
+  const object = cfg.rigged ? SkeletonUtils.clone(L.template) : L.template.clone(true);
+  if (!cfg.neutral && !cfg.prop && team >= 0) tint(object, team);
+  const inst = { object };
+  if (cfg.muzzle) {
+    inst.barrel = object.getObjectByName('barrel');
+    inst.muzzle = object.getObjectByName('muzzle');
+    if (inst.barrel) inst.barrelRest = inst.barrel.position.clone();
   }
-  if (!cfg.anim) return { object };
-  const mixer = new THREE.AnimationMixer(object);
-  const actions = {};
-  for (const [k, clip] of Object.entries(L.clips)) if (clip) actions[k] = mixer.clipAction(clip);
-  actions.walk.play();
-  return { object, mixer, actions };
+  if (type === 'worker' && loaded.crystal) {
+    // A small crystal held in the claws while carrying cargo back to base.
+    const c = loaded.crystal.template.clone(true);
+    c.scale.setScalar(0.22);
+    c.position.set(0, 0.25, 0.5);
+    c.visible = false;
+    object.add(c);
+    inst.cargo = c;
+  }
+  if (cfg.rigged) {
+    const mixer = new THREE.AnimationMixer(object);
+    inst.mixer = mixer;
+    inst.actions = { walk: mixer.clipAction(L.clips.walk) };
+    inst.actions.walk.play();
+    inst.bones = {};
+    for (const n of ['Spine', 'RightArm', 'RightForeArm', 'RightHand', 'LeftArm', 'LeftForeArm', 'LeftHand']) inst.bones[n] = object.getObjectByName(n);
+    if (cfg.weapon && loaded[cfg.weapon]) {
+      // The weapon is placed in world space every frame (see Renderer.poseRifleman), so it lives on the root.
+      const w = loaded[cfg.weapon].template.clone(true);
+      tint(w, team);
+      const pivot = new THREE.Group();
+      w.rotation.y = -Math.PI / 2; // model's muzzle (+x) to the pivot's forward (+z)
+      w.position.set(0, -0.12, 0.1); // grip near the hand, barrel forward
+      pivot.add(w);
+      object.add(pivot);
+      inst.weapon = pivot;
+      inst.weaponLength = MODELS[cfg.weapon].w;
+    }
+  }
+  return inst;
 }

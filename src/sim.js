@@ -381,14 +381,24 @@ export class Sim {
     const d = Math.hypot(t.x - e.x, t.z - e.z) - t.r - e.r;
     if (d <= T.range) {
       e.rot = Math.atan2(t.x - e.x, t.z - e.z);
+      e.aiming = true;
+      this.chargeUp(e, T);
       if (e.cd <= 0) { this.fire(e, t); e.cd = T.cooldown; }
     } else {
       this.moveTo(e, t.x, t.z, 0);
     }
   }
 
+  // Heavy guns announce the shot a moment early so clients can show a charge-up glow.
+  chargeUp(e, T) {
+    if (!T.charge || e.charged || e.cd > T.charge) return;
+    e.charged = true;
+    this.events.push({ e: 'charge', a: e.id, t: r2(Math.max(e.cd, DT)) });
+  }
+
   fire(e, t) {
     const T = TYPES[e.type];
+    e.charged = false;
     const mult = (k) => (T.bonus && T.bonus[k]) || 1;
     this.damage(t, T.dmg * mult(t.type), e);
     if (T.splash) {
@@ -486,6 +496,7 @@ export class Sim {
       }
       if (t) {
         b.rot = Math.atan2(t.x - b.x, t.z - b.z);
+        this.chargeUp(b, T);
         if (b.cd <= 0) { this.fire(b, t); b.cd = T.cooldown; }
       }
     }
@@ -554,7 +565,7 @@ export class Sim {
 
   // Compact state for clients: ents are [id, typeIdx, owner, x, z, rot, hp, a, b, queue]
   //   building: a = build progress, b = training progress, queue = [typeIdx...]
-  //   unit:     a = carried crystals, b = 1 moving / 2 working (gathering, building)
+  //   unit:     a = carried crystals, b = 1 moving / 2 working (gathering, building) / 3 aiming at a target in range
   //   resource: hp = remaining amount
   snapshot() {
     const ents = [];
@@ -566,8 +577,9 @@ export class Sim {
         if (e.queue.length) { b = r2(e.trainT / TYPES[e.queue[0]].time); q = e.queue.map((k) => TYPE_INDEX[k]); }
       } else if (T.kind === 'unit') {
         a = e.carry;
-        b = e.moving ? 1 : e.working ? 2 : 0;
+        b = e.moving ? 1 : e.working ? 2 : e.aiming ? 3 : 0;
         e.working = false;
+        e.aiming = false;
       }
       ents.push([e.id, TYPE_INDEX[e.type], e.owner, r2(e.x), r2(e.z), r2(e.rot), Math.ceil(T.kind === 'resource' ? e.amount : e.hp), a, b, q]);
     }

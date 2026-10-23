@@ -28,7 +28,7 @@ export const TYPES = {
   },
   tank: {
     kind: 'unit', name: 'Hover Tank', hp: 240, speed: 3.6, radius: 1.1, cost: 150, time: 22, pop: 3,
-    dmg: 26, range: 7.5, cooldown: 2.2, sight: 10, armor: 'heavy', splash: 2.2,
+    dmg: 26, range: 7.5, cooldown: 2.2, sight: 10, armor: 'heavy', splash: 2.2, charge: 0.35,
     bonus: { soldier: 1.4, worker: 1.4 }, hotkey: 'E',
   },
   hq: {
@@ -41,7 +41,7 @@ export const TYPES = {
   },
   turret: {
     kind: 'building', name: 'Defense Turret', hp: 380, radius: 1.3, cost: 100, time: 20,
-    dmg: 13, range: 10, cooldown: 1.0, sight: 11, hotkey: 'T',
+    dmg: 13, range: 10, cooldown: 1.0, sight: 11, hotkey: 'T', charge: 0.25,
   },
   crystal: { kind: 'resource', name: 'Crystals', radius: 1.4, amount: 1200 },
   rock: { kind: 'prop', name: 'Boulder', radius: 2.2 },

@@ -6,7 +6,8 @@ const VOICE = ['unit_ready', 'built', 'attack', 'nocrystals', 'popcap', 'victory
 const ACKS = { move: ['ack_moving', 'ack_onmyway'], attack: ['ack_onmyway', 'ack_moving'], select: ['ack_ready'] };
 const ALL = [...SFX, ...VOICE, ...new Set(Object.values(ACKS).flat())];
 
-const VOL = { sfx: 0.55, voice: 0.9, ack: 0.75, music: 0.35 };
+// Files are loudness-normalized (sfx -21, voice -19, music -22 dB mean), so these are just the mix.
+const VOL = { sfx: 0.45, voice: 0.8, ack: 0.6, music: 0.3 };
 
 class Audio {
   constructor() {

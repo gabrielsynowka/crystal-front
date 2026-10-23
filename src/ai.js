@@ -34,12 +34,12 @@ export class Bot {
     let crystals = me.crystals;
     const pop = sim.pop[this.pid];
 
-    // Idle workers go back to mining.
+    // Idle workers, and workers queuing at a busy node, go to the least-crowded crystal.
     for (const w of workers) {
-      if (!w.order) {
-        const n = sim.nearestCrystal(hq.x, hq.z, 30) || sim.nearestCrystal(w.x, w.z, 200);
-        if (n) this.cmd({ t: 'gather', ids: [w.id], target: n.id });
-      }
+      const waiting = w.order && w.order.type === 'gather' && w.order.phase === 'wait';
+      if (w.order && !waiting) continue;
+      const n = sim.bestCrystal(this.pid, hq.x, hq.z, 30) || sim.nearestCrystal(w.x, w.z, 200);
+      if (n && !(waiting && n.id === w.order.node)) this.cmd({ t: 'gather', ids: [w.id], target: n.id });
     }
 
     // Economy.

@@ -2,3 +2,4 @@
 node_modules/
 *.log
 assets_src/
+tools/

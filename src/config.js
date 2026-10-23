@@ -23,7 +23,7 @@ export const TYPES = {
   },
   ranger: {
     kind: 'unit', name: 'Ranger', hp: 55, speed: 4.4, radius: 0.5, cost: 75, time: 14, pop: 1,
-    dmg: 11, range: 9, cooldown: 1.3, sight: 11, armor: 'light',
+    dmg: 11, range: 11, cooldown: 1.3, sight: 12, armor: 'light',
     bonus: { tank: 2.2, turret: 1.5 }, hotkey: 'W',
   },
   tank: {

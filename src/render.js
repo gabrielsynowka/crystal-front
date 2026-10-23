@@ -3,6 +3,7 @@ import * as THREE from 'three';
 import { TYPES, TEAM_COLORS, MAP_SIZE } from './config.js';
 import { START_POS } from './sim.js';
 import { instantiate } from './assets.js';
+import { Fog, fogUniforms, applyFog } from './fog.js';
 
 const M = (color, o = {}) => new THREE.MeshStandardMaterial({ color, flatShading: true, roughness: 0.75, metalness: 0.05, ...o });
 const MAT = {
@@ -16,12 +17,13 @@ const NEUTRAL = M(0x9ca3af);
 
 // Rifle grip placement relative to the right shoulder, in the character's frame (faces +z, its right side is -x).
 // LOW: carried at the hip pointing forward-down. AIM: raised with the stock at the shoulder, level.
-const RIFLE_POSE = {
-  low: { offset: new THREE.Vector3(0.12, -0.55, 0.28), pitch: 0.5 },
-  aim: { offset: new THREE.Vector3(0.14, -0.15, 0.3), pitch: 0 },
+export const RIFLE_POSE = {
+  low: { offset: new THREE.Vector3(0.14, -0.42, 0.24), pitch: 0.55, yaw: 0.35 }, // angled across the body
+  aim: { offset: new THREE.Vector3(0.16, -0.06, 0.2), pitch: 0, yaw: 0 }, // stock in the shoulder, at cheek height
 };
 // Elbow hints: right elbow down/out/back, left elbow down/out.
-const POLE = { right: new THREE.Vector3(-0.7, -1, -0.4), left: new THREE.Vector3(0.7, -1, -0.1) };
+export const HAND_TWIST = { right: 0, left: 0 };
+export const POLE = { right: new THREE.Vector3(-0.7, -1, -0.4), left: new THREE.Vector3(0.7, -1, -0.1) };
 const BONE_UP = new THREE.Vector3(0, 1, 0);
 const _q = new THREE.Quaternion(), _q2 = new THREE.Quaternion(), _v = new THREE.Vector3(), _v2 = new THREE.Vector3();
 const _a = new THREE.Vector3(), _b = new THREE.Vector3(), _c = new THREE.Vector3(), _t = new THREE.Vector3(), _p = new THREE.Vector3(), _e = new THREE.Vector3();
@@ -222,6 +224,10 @@ export class Renderer {
       groundMat.map = setupGroundTex(t);
       groundMat.needsUpdate = true;
     });
+    this.fog = new Fog(localSlot);
+    this.fogT = 0;
+    fogUniforms.fogTex.value = this.fog.tex;
+    applyFog(groundMat);
     const ground = new THREE.Mesh(new THREE.PlaneGeometry(MAP_SIZE, MAP_SIZE), groundMat);
     ground.rotation.x = -Math.PI / 2;
     ground.receiveShadow = true;
@@ -303,6 +309,7 @@ export class Renderer {
       g.traverse((m) => { if (m.isMesh) { m.castShadow = true; m.receiveShadow = true; } });
       if (T.kind === 'unit') g.scale.setScalar(1.25); // a touch larger than their footprint, for readability
     }
+    g.traverse((o) => { if (o.isMesh) applyFog(o.material); });
     const root = new THREE.Group();
     root.add(g);
     const ring = new THREE.Mesh(this.ringGeo, new THREE.MeshBasicMaterial({ color: 0x4ade80, transparent: true, opacity: 0.9, depthWrite: false }));
@@ -327,9 +334,17 @@ export class Renderer {
 
   sync(view, selected, dt) {
     this.time += dt;
+    this.fogT -= dt;
+    if (this.fogT <= 0) {
+      this.fogT = 0.12;
+      this.fog.revealAll = view.over || (view.me && !view.me.alive);
+      this.fog.update(view);
+    }
     for (const [id, e] of view.ents) {
       let m = this.meshes.get(id);
       if (!m) { m = this.makeMesh(e); this.meshes.set(id, m); }
+      m.root.visible = this.fog.shows(e);
+      if (!m.root.visible) continue;
       const T = TYPES[e.type];
       m.root.position.set(e.x, 0, e.z);
       if (m.kind !== 'resource') m.model.rotation.y = e.rot;
@@ -351,7 +366,7 @@ export class Renderer {
       m.ring.visible = sel;
       if (sel) m.ring.material.color.setHex(e.owner === view.localId ? 0x4ade80 : e.owner < 0 ? 0xfacc15 : 0xf87171);
       const maxHp = T.hp;
-      const showBar = maxHp && (sel || e.hp < maxHp);
+      const showBar = maxHp && (sel || e.hp < maxHp) && (e.owner === view.localId || this.fog.visible(e.x, e.z));
       m.bar.visible = !!showBar;
       if (showBar) {
         const f = Math.max(0, Math.min(1, e.hp / maxHp));
@@ -399,13 +414,19 @@ export class Renderer {
     m.model.worldToLocal(_v2);
     w.position.copy(_v2).add(_v.copy(RIFLE_POSE.low.offset).lerp(RIFLE_POSE.aim.offset, m.aimW));
     w.position.z -= 0.08 * k; // recoil pushes it back into the shoulder...
-    w.rotation.set(RIFLE_POSE.low.pitch * (1 - m.aimW) - 0.15 * k, 0, 0); // ...and the muzzle climbs
+    w.rotation.set(RIFLE_POSE.low.pitch * (1 - m.aimW) - 0.15 * k, RIFLE_POSE.low.yaw * (1 - m.aimW), 0); // ...and the muzzle climbs
     w.updateMatrixWorld(true);
     const objQ = m.model.getWorldQuaternion(_q2);
     const grip = w.getWorldPosition(new THREE.Vector3());
     const fore = w.localToWorld(m.fore.clone());
     reach(B.RightArm, B.RightForeArm, B.RightHand, grip, POLE.right.clone().applyQuaternion(objQ));
     reach(B.LeftArm, B.LeftForeArm, B.LeftHand, fore, POLE.left.clone().applyQuaternion(objQ));
+    // Straight wrists (rest angle), with the forearm twisted so the palms face the rifle.
+    for (const [hand, fa, twist] of [[B.RightHand, B.RightForeArm, HAND_TWIST.right], [B.LeftHand, B.LeftForeArm, HAND_TWIST.left]]) {
+      fa.quaternion.multiply(_q.setFromAxisAngle(BONE_UP, twist));
+      hand.quaternion.copy(m.handRest.get(hand));
+      fa.updateMatrixWorld(true);
+    }
   }
 
   // World position of a unit's gun muzzle, if it has one.
@@ -418,7 +439,7 @@ export class Renderer {
   // Tank/turret: a glow builds at the muzzle just before the shot.
   charge(ev) {
     const m = this.meshes.get(ev.a);
-    if (!m || !m.muzzle) return;
+    if (!m || !m.muzzle || !m.root.visible) return;
     const glow = new THREE.Mesh(this.fxGeo.sphere, new THREE.MeshBasicMaterial({ color: 0xffd27a, transparent: true, depthWrite: false }));
     const dur = Math.max(0.12, ev.t);
     this.addFx(glow, dur, (g, t) => {
@@ -446,6 +467,7 @@ export class Renderer {
 
   shot(ev) {
     const shooter = this.meshes.get(ev.a);
+    if (!this.fog.visible(ev.x, ev.z) && !this.fog.visible(ev.tx, ev.tz)) return;
     let from = new THREE.Vector3(ev.x, ev.k === 'turret' ? 1.3 : ev.k === 'tank' ? 1.4 : 1.0, ev.z);
     if (shooter) {
       shooter.kick = 1;
@@ -496,7 +518,7 @@ export class Renderer {
 
   death(ev) {
     const T = TYPES[ev.k];
-    if (!T || T.kind === 'resource') return;
+    if (!T || T.kind === 'resource' || !this.fog.visible(ev.x, ev.z)) return;
     const big = T.kind === 'building' ? T.radius * 1.4 : ev.k === 'tank' ? 2.4 : 1.2;
     this.explosion(ev.x, ev.z, big, 0xff7a2f, T.kind === 'building' ? 0.9 : 0.5);
     this.explosion(ev.x, ev.z, big * 0.6, 0xffe08a, 0.3);

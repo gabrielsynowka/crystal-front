@@ -42,6 +42,7 @@ export class Input {
   pick(p) {
     let best = null, bs = Infinity;
     for (const e of this.view.ents.values()) {
+      if (!this.r.fog.shows(e)) continue;
       const T = TYPES[e.type];
       const d = Math.hypot(e.x - p.x, e.z - p.z);
       const reach = T.radius + (T.kind === 'unit' ? 0.6 : 0.2);
@@ -76,11 +77,11 @@ export class Input {
     if (!p) return;
     if (e.button === 0) {
       if (this.mode && this.mode.place) { this.placeBuilding(p, e.shiftKey); return; }
-      if (this.mode === 'amove') { this.order(p, true); if (!e.shiftKey) this.setMode(null); return; }
+      if (this.mode === 'amove') { this.order(p, true, e.shiftKey); if (!e.shiftKey) this.setMode(null); return; }
       this.drag = { x: e.clientX, y: e.clientY, shift: e.shiftKey };
     } else if (e.button === 2) {
       if (this.mode) { this.setMode(null); return; }
-      this.order(p, false);
+      this.order(p, false, e.shiftKey);
     }
   }
 
@@ -132,8 +133,8 @@ export class Input {
     return s.x >= 0 && s.x <= innerWidth && s.y >= 0 && s.y <= innerHeight;
   }
 
-  // Right click (or attack-move click) on the ground at p.
-  order(p, amove) {
+  // Right click (or attack-move click); shift appends to each unit's order queue.
+  order(p, amove, queue = false) {
     const me = this.view.localId;
     const units = this.myUnits();
     const ids = units.map((u) => u.id);
@@ -147,23 +148,23 @@ export class Input {
       return;
     }
     if (amove) {
-      this.send({ t: 'amove', ids, x: p.x, z: p.z });
+      this.send({ t: 'amove', ids, x: p.x, z: p.z, queue });
       this.r.marker(p.x, p.z, 0xf87171);
       return;
     }
     if (target && target.owner >= 0 && target.owner !== me) {
-      this.send({ t: 'attack', ids, target: target.id });
+      this.send({ t: 'attack', ids, target: target.id, queue });
       this.r.marker(target.x, target.z, 0xf87171);
     } else if (target && target.type === 'crystal') {
-      this.send({ t: 'gather', ids, target: target.id });
+      this.send({ t: 'gather', ids, target: target.id, queue });
       this.r.marker(target.x, target.z, 0x2dd4bf);
     } else if (target && target.owner === me && TYPES[target.type].kind === 'building' && target.a < 1 && units.some((u) => u.type === 'worker')) {
-      this.send({ t: 'build', ids, target: target.id });
+      this.send({ t: 'build', ids, target: target.id, queue });
       this.r.marker(target.x, target.z, 0x4ade80);
     } else if (target && target.owner === me && TYPES[target.type].dropoff && units.some((u) => u.type === 'worker' && u.a > 0)) {
-      this.send({ t: 'gather', ids, target: target.id });
+      this.send({ t: 'gather', ids, target: target.id, queue });
     } else {
-      this.send({ t: 'move', ids, x: p.x, z: p.z });
+      this.send({ t: 'move', ids, x: p.x, z: p.z, queue });
       this.r.marker(p.x, p.z);
     }
   }
@@ -176,7 +177,7 @@ export class Input {
     if (!canPlace(kind, x, z, this.view.ents.values())) { this.ui.message("Can't build there"); return; }
     // Send the closest worker only.
     workers.sort((a, b) => Math.hypot(a.x - x, a.z - z) - Math.hypot(b.x - x, b.z - z));
-    this.send({ t: 'build', ids: [workers[0].id], kind, x, z });
+    this.send({ t: 'build', ids: [workers[0].id], kind, x, z, queue: keep });
     if (!keep) this.setMode(null);
   }
 

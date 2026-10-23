@@ -147,6 +147,7 @@ export function instantiate(type, team) {
     object.traverse((b) => { if (b.isBone) inst.rest.push([b, b.position.clone(), b.quaternion.clone()]); });
     inst.bones = {};
     for (const n of ['RightArm', 'RightForeArm', 'RightHand', 'LeftArm', 'LeftForeArm', 'LeftHand']) inst.bones[n] = object.getObjectByName(n);
+    inst.handRest = new Map(inst.rest.filter(([b]) => /Hand$/.test(b.name)).map(([b, , q]) => [b, q]));
     if (cfg.weapon && loaded[cfg.weapon]) {
       // The weapon is placed on the root every frame (see Renderer.poseRifleman); its pivot is the grip.
       const W = WEAPONS[cfg.weapon];

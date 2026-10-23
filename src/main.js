@@ -9,7 +9,8 @@ import { Bot } from './ai.js';
 import { HostNet, ClientNet } from './net.js';
 import { loadAssets } from './assets.js';
 import { audio } from './audio.js';
-import { TYPES } from './config.js';
+import { TYPES, TYPE_LIST } from './config.js';
+import { renderIcons, icon } from './icons.js';
 
 // Browsers only allow sound after a user gesture; the first click anywhere starts it.
 document.addEventListener('pointerdown', () => {
@@ -24,6 +25,14 @@ const $ = (id) => document.getElementById(id);
 // Models start downloading right away, while the player is still in the menu.
 const assetsReady = loadAssets((f) => {
   $('loading').textContent = f < 1 ? `Loading models… ${Math.round(f * 100)}%` : '';
+}).then(() => {
+  // Menu roster, then every portrait the HUD can need (all four team colours, plus neutral resources).
+  const roster = ['worker', 'soldier', 'tank', 'ranger', 'turret'];
+  renderIcons(roster, 0);
+  $('roster').innerHTML = roster.map((t) => `<img src="${icon(t, 0)}" alt="">`).join('');
+  const owned = TYPE_LIST.filter((t) => ['unit', 'building'].includes(TYPES[t].kind));
+  for (let team = 0; team < 4; team++) renderIcons(owned, team);
+  renderIcons(['crystal', 'rock'], -1);
 });
 const hex = (c) => '#' + c.toString(16).padStart(6, '0');
 const SNAP_EVERY = 2; // host sends every 2nd tick (10 Hz) to clients
@@ -50,10 +59,10 @@ function startClient(localId, send) {
     if (ev.e === 'charge') renderer.charge(ev);
     else if (ev.e === 'shot') {
       renderer.shot(ev);
-      if (SHOT_SFX[ev.k]) audio.at(SHOT_SFX[ev.k], ev.x, ev.z, { gap: ev.k === 'soldier' ? 0.07 : 0.12 });
+      if (SHOT_SFX[ev.k] && (renderer.fog.visible(ev.x, ev.z) || renderer.fog.visible(ev.tx, ev.tz))) audio.at(SHOT_SFX[ev.k], ev.x, ev.z, { gap: ev.k === 'soldier' ? 0.07 : 0.12 });
     } else if (ev.e === 'death') {
       renderer.death(ev);
-      const kind = TYPES[ev.k] && TYPES[ev.k].kind;
+      const kind = renderer.fog.visible(ev.x, ev.z) && TYPES[ev.k] && TYPES[ev.k].kind;
       if (kind === 'building') audio.at('explode_big', ev.x, ev.z, { vol: 0.8, max: 2 });
       else if (kind === 'unit') audio.at('explode_small', ev.x, ev.z, { gap: 0.1 });
     }
@@ -230,6 +239,7 @@ function renderLobby(slots, you, isHost, net) {
     const row = document.createElement('div');
     row.className = 'slot ' + s.kind;
     const label = s.kind === 'open' ? 'Open — waiting for player' : s.kind === 'bot' ? 'Bot' : s.name + (i === you ? ' (you)' : '');
+    if (s.kind !== 'open') row.style.borderLeftColor = hex(TEAM_COLORS[i]);
     row.innerHTML = `<span class="swatch" style="background:${s.kind === 'open' ? '#4b4766' : hex(TEAM_COLORS[i])}"></span><span class="sname">${label.replace(/</g, '&lt;')}</span>`;
     if (isHost && i > 0 && s.kind !== 'human') {
       const b = document.createElement('button');

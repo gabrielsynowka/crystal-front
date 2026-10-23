@@ -4,6 +4,7 @@ import { TYPES, DT, MAP_SIZE, POP_CAP, START_CRYSTALS, TYPE_INDEX, BUILDABLE } f
 
 const HALF = MAP_SIZE / 2;
 export const START_POS = [[-56, -56], [56, 56], [56, -56], [-56, 56]];
+const MINERS_PER_NODE = 2;
 
 function mulberry32(seed) {
   return () => {
@@ -88,7 +89,7 @@ export class Sim {
       this.spawn('hq', i, cx, cz);
       for (let k = 0; k < 4; k++) {
         const w = this.spawn('worker', i, cx + Math.sign(cx) * 4.5 + (k - 1.5) * 1.2, cz + Math.sign(cz) * 4.5 - (k - 1.5) * 1.2);
-        const n = this.nearestCrystal(w.x, w.z, 30);
+        const n = this.bestCrystal(i, w.x, w.z, 30);
         if (n) w.order = { type: 'gather', node: n.id, nx: n.x, nz: n.z, phase: 'toNode', t: 0 };
       }
     });
@@ -97,7 +98,8 @@ export class Sim {
   spawn(type, owner, x, z, built = true) {
     const T = TYPES[type];
     const e = { id: this.nextId++, type, owner, x, z, rot: 0, r: T.radius, hp: T.hp || 1, maxHp: T.hp || 1 };
-    if (T.kind === 'unit') { e.order = null; e.cd = 0; e.carry = 0; e.moving = false; }
+    if (T.kind === 'unit') { e.order = null; e.orders = []; e.cd = 0; e.carry = 0; e.moving = false; }
+    if (T.kind === 'resource') { e.miners = new Set(); e.waitQ = []; }
     if (T.kind === 'building') {
       e.built = built; e.progress = built ? 1 : 0; e.queue = []; e.trainT = 0; e.rally = null; e.cd = 0; e.tgt = 0;
       if (!built) e.hp = Math.max(1, e.maxHp * 0.1);
@@ -117,18 +119,19 @@ export class Sim {
     if (!p || !p.alive || this.over) return;
     const mine = (ids) => (ids || []).map((id) => this.ents.get(id)).filter((e) => e && e.owner === pid && isUnit(e));
     const err = (msg) => this.events.push({ e: 'err', o: pid, msg });
+    const q = !!c.queue; // shift-click: append to the unit's order queue instead of replacing it
     switch (c.t) {
       case 'move':
       case 'amove':
-        this.groupMove(mine(c.ids), c.x, c.z, c.t);
+        this.groupMove(mine(c.ids), c.x, c.z, c.t, q);
         break;
       case 'stop':
-        for (const u of mine(c.ids)) u.order = null;
+        for (const u of mine(c.ids)) { u.order = null; u.orders.length = 0; }
         break;
       case 'attack': {
         const t = this.ents.get(c.target);
         if (!t || t.owner < 0) break;
-        for (const u of mine(c.ids)) u.order = { type: 'attack', target: t.id };
+        for (const u of mine(c.ids)) this.setOrder(u, { type: 'attack', target: t.id }, q);
         this.events.push({ e: 'ack', o: pid, k: 'attack' });
         break;
       }
@@ -138,15 +141,15 @@ export class Sim {
         const units = mine(c.ids);
         for (const u of units) {
           if (u.type !== 'worker') continue;
-          if (t.type === 'crystal') u.order = { type: 'gather', node: t.id, nx: t.x, nz: t.z, phase: 'toNode', t: 0 };
+          if (t.type === 'crystal') this.setOrder(u, { type: 'gather', node: t.id, nx: t.x, nz: t.z, phase: 'toNode', t: 0 }, q);
           else if (TYPES[t.type].dropoff && t.owner === pid && u.carry > 0) {
             const n = this.ents.get(u.lastNode) || this.nearestCrystal(u.x, u.z, 30);
-            u.order = { type: 'gather', node: n ? n.id : 0, nx: n ? n.x : u.x, nz: n ? n.z : u.z, phase: 'return', t: 0 };
+            this.setOrder(u, { type: 'gather', node: n ? n.id : 0, nx: n ? n.x : u.x, nz: n ? n.z : u.z, phase: 'return', t: 0 }, q);
           }
         }
         // Non-workers right-clicked onto crystals just walk there.
         const others = units.filter((u) => u.type !== 'worker');
-        if (others.length) this.groupMove(others, t.x, t.z, 'move');
+        if (others.length) this.groupMove(others, t.x, t.z, 'move', q);
         this.events.push({ e: 'ack', o: pid, k: 'gather' });
         break;
       }
@@ -155,7 +158,7 @@ export class Sim {
         if (!workers.length) break;
         if (c.target) { // help finish an existing construction site
           const b = this.ents.get(c.target);
-          if (b && b.owner === pid && isBuilding(b) && !b.built) for (const w of workers) w.order = { type: 'build', target: b.id };
+          if (b && b.owner === pid && isBuilding(b) && !b.built) for (const w of workers) this.setOrder(w, { type: 'build', target: b.id }, q);
           break;
         }
         if (!BUILDABLE.includes(c.kind)) break;
@@ -164,7 +167,7 @@ export class Sim {
         if (!canPlace(c.kind, c.x, c.z, this.ents.values())) { err("Can't build there"); break; }
         p.crystals -= T.cost;
         const b = this.spawn(c.kind, pid, c.x, c.z, false);
-        for (const w of workers) w.order = { type: 'build', target: b.id };
+        for (const w of workers) this.setOrder(w, { type: 'build', target: b.id }, q);
         this.events.push({ e: 'place', o: pid, x: b.x, z: b.z });
         break;
       }
@@ -201,7 +204,13 @@ export class Sim {
     }
   }
 
-  groupMove(units, x, z, type) {
+  setOrder(u, order, queue) {
+    if (queue && (u.order || u.orders.length)) { u.orders.push(order); return; }
+    u.order = order;
+    u.orders.length = 0;
+  }
+
+  groupMove(units, x, z, type, queue = false) {
     if (!units.length) return;
     // Square formation around the target, larger spacing when tanks are present.
     const cols = Math.ceil(Math.sqrt(units.length));
@@ -215,7 +224,7 @@ export class Sim {
       const oz = (Math.floor(i / cols) - (Math.ceil(units.length / cols) - 1) / 2) * spacing;
       const tx = Math.max(-HALF + 1, Math.min(HALF - 1, x + ox));
       const tz = Math.max(-HALF + 1, Math.min(HALF - 1, z + oz));
-      u.order = { type, x: tx, z: tz };
+      this.setOrder(u, { type, x: tx, z: tz }, queue);
     });
     this.events.push({ e: 'ack', o: units[0].owner, k: type, x, z });
   }
@@ -228,6 +237,23 @@ export class Sim {
       if (e.type !== 'crystal' || e.amount <= 0) continue;
       const d = Math.hypot(e.x - x, e.z - z);
       if (d < bd) { bd = d; best = e; }
+    }
+    return best;
+  }
+
+  // Least-crowded crystal near (x, z) for this owner's workers; distance breaks ties.
+  bestCrystal(owner, x, z, maxDist = 25) {
+    const load = new Map();
+    for (const w of this.ents.values()) {
+      if (w.owner === owner && w.type === 'worker' && w.order && w.order.type === 'gather') load.set(w.order.node, (load.get(w.order.node) || 0) + 1);
+    }
+    let best = null, bs = Infinity;
+    for (const n of this.ents.values()) {
+      if (n.type !== 'crystal' || n.amount <= 0) continue;
+      const d = Math.hypot(n.x - x, n.z - z);
+      if (d > maxDist) continue;
+      const s = (load.get(n.id) || 0) * 10 + d;
+      if (s < bs) { bs = s; best = n; }
     }
     return best;
   }
@@ -284,6 +310,7 @@ export class Sim {
     const T = TYPES[e.type];
     e.cd = Math.max(0, e.cd - DT);
     e.moving = false;
+    if (!e.order && e.orders.length) e.order = e.orders.shift();
     let o = e.order;
     if (!o) {
       if (e.type !== 'worker' && (this.tick + e.id) % 5 === 0) {
@@ -342,7 +369,15 @@ export class Sim {
         if (!n) { e.order = null; return; }
         o.node = n.id; o.nx = n.x; o.nz = n.z;
       }
-      if (this.moveTo(e, n.x, n.z, n.r + e.r + 0.3)) { o.phase = 'mine'; o.t = 0; }
+      if (this.moveTo(e, n.x, n.z, n.r + e.r + 0.3)) o.phase = this.claimSlot(n, e) ? 'mine' : 'wait';
+      o.t = 0;
+    } else if (o.phase === 'wait') {
+      // Node is busy: wait at it, in arrival order, until one of its two mining slots frees up.
+      const n = this.ents.get(o.node);
+      if (!n || n.amount <= 0) { o.phase = 'toNode'; return; }
+      e.rot = Math.atan2(n.x - e.x, n.z - e.z);
+      e.waiting = true;
+      if (this.claimSlot(n, e)) { o.phase = 'mine'; o.t = 0; }
     } else if (o.phase === 'mine') {
       const n = this.ents.get(o.node);
       if (!n || n.amount <= 0) { o.phase = 'toNode'; return; }
@@ -354,6 +389,7 @@ export class Sim {
         n.amount -= amt;
         e.carry = amt;
         e.lastNode = n.id;
+        n.miners.delete(e.id);
         o.phase = 'return';
       }
     } else {
@@ -366,6 +402,24 @@ export class Sim {
         o.phase = 'toNode';
       }
     }
+  }
+
+  // A crystal node lets MINERS_PER_NODE workers mine at once; others queue first-come, first-served.
+  claimSlot(n, e) {
+    const active = (id, phase) => {
+      const w = this.ents.get(id);
+      return w && w.order && w.order.type === 'gather' && w.order.node === n.id && w.order.phase === phase;
+    };
+    for (const id of n.miners) if (!active(id, 'mine')) n.miners.delete(id);
+    n.waitQ = n.waitQ.filter((id) => active(id, 'wait') || id === e.id);
+    if (n.miners.has(e.id)) return true;
+    if (n.miners.size < MINERS_PER_NODE && (!n.waitQ.length || n.waitQ[0] === e.id)) {
+      n.miners.add(e.id);
+      n.waitQ = n.waitQ.filter((id) => id !== e.id);
+      return true;
+    }
+    if (!n.waitQ.includes(e.id)) n.waitQ.push(e.id);
+    return false;
   }
 
   // Gives up on a move order when the unit stops making progress near its goal (crowding).
@@ -565,8 +619,8 @@ export class Sim {
 
   // Compact state for clients: ents are [id, typeIdx, owner, x, z, rot, hp, a, b, queue]
   //   building: a = build progress, b = training progress, queue = [typeIdx...]
-  //   unit:     a = carried crystals, b = 1 moving / 2 working (gathering, building) / 3 aiming at a target in range
-  //   resource: hp = remaining amount
+  //   unit:     a = carried crystals, b = 1 moving / 2 working (gathering, building) / 3 aiming / 4 waiting for a mining slot
+  //   resource: hp = remaining amount, a = active miners, b = workers queued
   snapshot() {
     const ents = [];
     for (const e of this.ents.values()) {
@@ -577,9 +631,13 @@ export class Sim {
         if (e.queue.length) { b = r2(e.trainT / TYPES[e.queue[0]].time); q = e.queue.map((k) => TYPE_INDEX[k]); }
       } else if (T.kind === 'unit') {
         a = e.carry;
-        b = e.moving ? 1 : e.working ? 2 : e.aiming ? 3 : 0;
+        b = e.moving ? 1 : e.working ? 2 : e.aiming ? 3 : e.waiting ? 4 : 0;
         e.working = false;
         e.aiming = false;
+        e.waiting = false;
+      } else if (T.kind === 'resource') {
+        a = e.miners.size;
+        b = e.waitQ.length;
       }
       ents.push([e.id, TYPE_INDEX[e.type], e.owner, r2(e.x), r2(e.z), r2(e.rot), Math.ceil(T.kind === 'resource' ? e.amount : e.hp), a, b, q]);
     }

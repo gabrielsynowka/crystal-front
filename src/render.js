@@ -14,15 +14,39 @@ const MAT = {
 const TEAM = TEAM_COLORS.map((c) => M(c, { emissive: c, emissiveIntensity: 0.25 }));
 const NEUTRAL = M(0x9ca3af);
 
-// Arm bone directions in the character's own frame (faces +z, its right side is -x).
-// LOW: rifle carried pointing forward-down. AIM: rifle raised to the shoulder, pointing at the target.
-const v3 = (x, y, z) => new THREE.Vector3(x, y, z).normalize();
-const ARM_POSE = {
-  low: { RightArm: v3(-0.2, -0.95, 0.2), RightForeArm: v3(0.3, -0.25, 0.9), LeftArm: v3(0.1, -0.85, 0.35), LeftForeArm: v3(-0.5, -0.15, 0.85) },
-  aim: { RightArm: v3(-0.25, -0.85, 0.35), RightForeArm: v3(0.35, 0.25, 0.9), LeftArm: v3(0.1, -0.7, 0.55), LeftForeArm: v3(-0.55, 0.3, 0.75) },
+// Rifle grip placement relative to the right shoulder, in the character's frame (faces +z, its right side is -x).
+// LOW: carried at the hip pointing forward-down. AIM: raised with the stock at the shoulder, level.
+const RIFLE_POSE = {
+  low: { offset: new THREE.Vector3(0.12, -0.55, 0.28), pitch: 0.5 },
+  aim: { offset: new THREE.Vector3(0.14, -0.15, 0.3), pitch: 0 },
 };
+// Elbow hints: right elbow down/out/back, left elbow down/out.
+const POLE = { right: new THREE.Vector3(-0.7, -1, -0.4), left: new THREE.Vector3(0.7, -1, -0.1) };
 const BONE_UP = new THREE.Vector3(0, 1, 0);
 const _q = new THREE.Quaternion(), _q2 = new THREE.Quaternion(), _v = new THREE.Vector3(), _v2 = new THREE.Vector3();
+const _a = new THREE.Vector3(), _b = new THREE.Vector3(), _c = new THREE.Vector3(), _t = new THREE.Vector3(), _p = new THREE.Vector3(), _e = new THREE.Vector3();
+
+// Points a bone (which extends along its local +Y) in a world direction.
+function aimBone(bone, worldDir) {
+  bone.parent.getWorldQuaternion(_q).invert();
+  bone.quaternion.setFromUnitVectors(BONE_UP, _v.copy(worldDir).normalize().applyQuaternion(_q));
+  bone.updateMatrixWorld(true);
+}
+
+// Two-bone IK: bends upper/fore so the hand reaches `target` (world), elbow toward `pole` (world direction).
+function reach(upper, fore, hand, target, pole) {
+  upper.getWorldPosition(_a); fore.getWorldPosition(_b); hand.getWorldPosition(_c);
+  const l1 = _a.distanceTo(_b), l2 = _b.distanceTo(_c);
+  _t.subVectors(target, _a);
+  const dist = Math.min(Math.max(_t.length(), 1e-4), (l1 + l2) * 0.999);
+  _t.normalize();
+  const cosA = Math.min(1, Math.max(-1, (l1 * l1 + dist * dist - l2 * l2) / (2 * l1 * dist)));
+  _p.copy(pole).addScaledVector(_t, -pole.dot(_t)).normalize(); // bend direction, perpendicular to the reach
+  _e.copy(_a).addScaledVector(_t, l1 * cosA).addScaledVector(_p, l1 * Math.sqrt(1 - cosA * cosA));
+  aimBone(upper, _v2.subVectors(_e, _a));
+  fore.getWorldPosition(_b);
+  aimBone(fore, _v2.subVectors(target, _b));
+}
 
 function box(w, h, d, mat, x = 0, y = 0, z = 0) {
   const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
@@ -348,41 +372,46 @@ export class Renderer {
 
   // Rigged infantry: legs from the walk clip; arms and rifle posed in code (carry, aim, recoil).
   animate(m, e, dt) {
-    const walk = m.actions.walk;
-    walk.timeScale = e.b === 1 ? 1.4 : 0;
-    if (e.b !== 1) walk.time = 0;
-    m.mixer.update(dt);
+    // Jog while moving; otherwise stand in the rig's bind pose (feet together, upright).
+    const run = m.actions.run;
+    if (e.b === 1) {
+      if (!run.isRunning()) run.reset().play();
+      run.timeScale = 1.1;
+      m.mixer.update(dt);
+    } else {
+      if (run.isRunning()) run.stop();
+      for (const [bone, p, q] of m.rest) { bone.position.copy(p); bone.quaternion.copy(q); }
+    }
     const engaged = e.b === 3 || m.kick > 0;
     m.aimW += ((engaged ? 1 : 0) - m.aimW) * Math.min(1, dt * 8);
     m.kick = Math.max(0, m.kick - dt * 5);
     if (m.bones.RightArm) this.poseRifleman(m);
   }
 
+  // The rifle is placed relative to the right shoulder; both hands are then solved onto it.
   poseRifleman(m) {
-    m.root.updateMatrixWorld(true);
-    const objQ = m.model.getWorldQuaternion(_q2);
-    for (const name of ['RightArm', 'RightForeArm', 'LeftArm', 'LeftForeArm']) {
-      const bone = m.bones[name];
-      if (!bone) continue;
-      _v.copy(ARM_POSE.low[name]).lerp(ARM_POSE.aim[name], m.aimW).normalize().applyQuaternion(objQ); // world direction
-      bone.parent.getWorldQuaternion(_q).invert();
-      bone.quaternion.setFromUnitVectors(BONE_UP, _v.applyQuaternion(_q));
-      bone.updateMatrixWorld(true);
-    }
     if (!m.weapon) return;
-    // Rifle sits at the right hand, pointing along the body: pitched down when carried, level when aiming.
-    m.bones.RightHand.getWorldPosition(_v2);
-    m.model.worldToLocal(_v2);
+    const B = m.bones;
+    m.root.updateMatrixWorld(true);
     const k = Math.sin(Math.min(1, m.kick) * Math.PI / 2);
-    m.weapon.position.copy(_v2);
-    m.weapon.position.z -= 0.1 * k;
-    m.weapon.rotation.set(0.5 * (1 - m.aimW) - 0.18 * k, 0, 0);
+    const w = m.weapon;
+    B.RightArm.getWorldPosition(_v2);
+    m.model.worldToLocal(_v2);
+    w.position.copy(_v2).add(_v.copy(RIFLE_POSE.low.offset).lerp(RIFLE_POSE.aim.offset, m.aimW));
+    w.position.z -= 0.08 * k; // recoil pushes it back into the shoulder...
+    w.rotation.set(RIFLE_POSE.low.pitch * (1 - m.aimW) - 0.15 * k, 0, 0); // ...and the muzzle climbs
+    w.updateMatrixWorld(true);
+    const objQ = m.model.getWorldQuaternion(_q2);
+    const grip = w.getWorldPosition(new THREE.Vector3());
+    const fore = w.localToWorld(m.fore.clone());
+    reach(B.RightArm, B.RightForeArm, B.RightHand, grip, POLE.right.clone().applyQuaternion(objQ));
+    reach(B.LeftArm, B.LeftForeArm, B.LeftHand, fore, POLE.left.clone().applyQuaternion(objQ));
   }
 
   // World position of a unit's gun muzzle, if it has one.
   muzzleOf(m, out) {
     if (m.muzzle) return m.muzzle.getWorldPosition(out);
-    if (m.weapon) return m.weapon.localToWorld(out.set(0, 0.1, 0.1 + m.weaponLength * 0.5));
+    if (m.weapon) return m.weapon.localToWorld(out.copy(m.muzzlePt));
     return null;
   }
 

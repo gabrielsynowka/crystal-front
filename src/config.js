@@ -18,7 +18,7 @@ export const TYPES = {
   },
   soldier: {
     kind: 'unit', name: 'Infantry', hp: 90, speed: 4.6, radius: 0.55, cost: 60, time: 12, pop: 1,
-    dmg: 9, range: 1.6, cooldown: 0.8, sight: 10, armor: 'light',
+    dmg: 9, range: 4.5, cooldown: 0.8, sight: 10, armor: 'light',
     bonus: { ranger: 1.6 }, hotkey: 'Q',
   },
   ranger: {

@@ -114,7 +114,8 @@ export class Bot {
     let best = null, bd = Infinity;
     for (const e of this.sim.ents.values()) {
       if (e.type !== 'hq' || e.owner === this.pid) continue;
-      const d = Math.hypot(e.x - hq.x, e.z - hq.z);
+      // Neighbours are often equidistant; the random term stops every bot picking the same victim.
+      const d = Math.hypot(e.x - hq.x, e.z - hq.z) + this.rand() * 40;
       if (d < bd) { bd = d; best = e; }
     }
     return best;

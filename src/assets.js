@@ -20,6 +20,12 @@ const MODELS = {
   sniper: { w: 1.45, yaw: 0, prop: true },
 };
 
+// Points on each weapon as [height above its bottom, distance along it from its centre (+ = muzzle side)].
+const WEAPONS = {
+  rifle: { grip: [0.12, -0.15], fore: [0.2, 0.15], muzzle: [0.3, 0.5] },
+  sniper: { grip: [0.08, -0.29], fore: [0.18, 0.07], muzzle: [0.24, 0.72] },
+};
+
 const loaded = {}; // type -> { template, clips }
 const teamMats = new Map(); // `${uuid}:${team}` -> material
 
@@ -31,12 +37,26 @@ export async function loadAssets(onProgress) {
   await Promise.all(types.map(async (type) => {
     try {
       const gltf = await loader.loadAsync(new URL(type + '.glb', base).href);
-      loaded[type] = { template: normalize(gltf.scene, MODELS[type]), clips: { walk: gltf.animations[0] } };
+      const clips = { walk: gltf.animations[0] };
+      if (MODELS[type].rigged) {
+        const run = await loader.loadAsync(new URL(type + '_run.glb', base).href);
+        clips.run = inPlace(run.animations[0]);
+      }
+      loaded[type] = { template: normalize(gltf.scene, MODELS[type]), clips };
     } catch (err) {
       console.warn('Model failed, using placeholder:', type, err);
     }
     onProgress?.(++done / types.length);
   }));
+}
+
+// The unit's position comes from the simulation, so strip any forward drift from the hips (keep the bounce).
+function inPlace(clip) {
+  for (const t of clip.tracks) {
+    if (!/Hips\.position$/.test(t.name)) continue;
+    for (let i = 0; i < t.values.length; i += 3) { t.values[i] = t.values[0]; t.values[i + 2] = t.values[2]; }
+  }
+  return clip;
 }
 
 // Wraps the model in a group whose origin is at the bottom centre, scaled to the configured size.
@@ -112,8 +132,8 @@ export function instantiate(type, team) {
   if (type === 'worker' && loaded.crystal) {
     // A small crystal held in the claws while carrying cargo back to base.
     const c = loaded.crystal.template.clone(true);
-    c.scale.setScalar(0.22);
-    c.position.set(0, 0.25, 0.5);
+    c.scale.setScalar(0.32);
+    c.position.set(0, 0.2, 0.78);
     c.visible = false;
     object.add(c);
     inst.cargo = c;
@@ -121,21 +141,26 @@ export function instantiate(type, team) {
   if (cfg.rigged) {
     const mixer = new THREE.AnimationMixer(object);
     inst.mixer = mixer;
-    inst.actions = { walk: mixer.clipAction(L.clips.walk) };
-    inst.actions.walk.play();
+    inst.actions = { run: mixer.clipAction(L.clips.run || L.clips.walk) };
+    inst.actions.run.play();
+    inst.rest = []; // bind pose, restored when the unit stands still
+    object.traverse((b) => { if (b.isBone) inst.rest.push([b, b.position.clone(), b.quaternion.clone()]); });
     inst.bones = {};
-    for (const n of ['Spine', 'RightArm', 'RightForeArm', 'RightHand', 'LeftArm', 'LeftForeArm', 'LeftHand']) inst.bones[n] = object.getObjectByName(n);
+    for (const n of ['RightArm', 'RightForeArm', 'RightHand', 'LeftArm', 'LeftForeArm', 'LeftHand']) inst.bones[n] = object.getObjectByName(n);
     if (cfg.weapon && loaded[cfg.weapon]) {
-      // The weapon is placed in world space every frame (see Renderer.poseRifleman), so it lives on the root.
+      // The weapon is placed on the root every frame (see Renderer.poseRifleman); its pivot is the grip.
+      const W = WEAPONS[cfg.weapon];
       const w = loaded[cfg.weapon].template.clone(true);
       tint(w, team);
+      w.rotation.y = Math.PI / 2; // muzzle along the pivot's forward (+z)
+      w.position.set(0, -W.grip[0], -W.grip[1]);
       const pivot = new THREE.Group();
-      w.rotation.y = -Math.PI / 2; // model's muzzle (+x) to the pivot's forward (+z)
-      w.position.set(0, -0.12, 0.1); // grip near the hand, barrel forward
       pivot.add(w);
       object.add(pivot);
+      const at = (p) => new THREE.Vector3(0, p[0] - W.grip[0], p[1] - W.grip[1]);
       inst.weapon = pivot;
-      inst.weaponLength = MODELS[cfg.weapon].w;
+      inst.fore = at(W.fore);
+      inst.muzzlePt = at(W.muzzle);
     }
   }
   return inst;

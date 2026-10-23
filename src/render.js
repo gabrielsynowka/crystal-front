@@ -2,6 +2,7 @@
 import * as THREE from 'three';
 import { TYPES, TEAM_COLORS, MAP_SIZE } from './config.js';
 import { START_POS } from './sim.js';
+import { instantiate } from './assets.js';
 
 const M = (color, o = {}) => new THREE.MeshStandardMaterial({ color, flatShading: true, roughness: 0.75, metalness: 0.05, ...o });
 const MAT = {
@@ -12,6 +13,7 @@ const MAT = {
 };
 const TEAM = TEAM_COLORS.map((c) => M(c, { emissive: c, emissiveIntensity: 0.25 }));
 const NEUTRAL = M(0x9ca3af);
+const SHOOT_TIME = 0.9; // seconds the fire animation is squeezed into
 
 function box(w, h, d, mat, x = 0, y = 0, z = 0) {
   const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
@@ -143,9 +145,13 @@ function groundTexture() {
     g.fillStyle = 'rgba(110,100,90,0.6)';
     g.beginPath(); g.ellipse(x, y, 2 + rnd() * 3, 1.5 + rnd() * 2, rnd() * 3, 0, Math.PI * 2); g.fill();
   }
-  const tex = new THREE.CanvasTexture(c);
-  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-  tex.repeat.set(MAP_SIZE / 20, MAP_SIZE / 20);
+  return setupGroundTex(new THREE.CanvasTexture(c));
+}
+
+function setupGroundTex(tex) {
+  // Mirrored wrapping hides the seams of a texture that doesn't tile perfectly.
+  tex.wrapS = tex.wrapT = THREE.MirroredRepeatWrapping;
+  tex.repeat.set(MAP_SIZE / 18, MAP_SIZE / 18);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.anisotropy = 4;
   return tex;
@@ -178,7 +184,12 @@ export class Renderer {
     this.sun.shadow.bias = -0.0005;
     this.scene.add(this.sun, this.sun.target);
 
-    const ground = new THREE.Mesh(new THREE.PlaneGeometry(MAP_SIZE, MAP_SIZE), new THREE.MeshStandardMaterial({ map: groundTexture(), roughness: 1 }));
+    const groundMat = new THREE.MeshStandardMaterial({ map: groundTexture(), roughness: 1 });
+    new THREE.TextureLoader().load(new URL('../assets/ground.webp', import.meta.url).href, (t) => {
+      groundMat.map = setupGroundTex(t);
+      groundMat.needsUpdate = true;
+    });
+    const ground = new THREE.Mesh(new THREE.PlaneGeometry(MAP_SIZE, MAP_SIZE), groundMat);
     ground.rotation.x = -Math.PI / 2;
     ground.receiveShadow = true;
     this.scene.add(ground);
@@ -250,9 +261,15 @@ export class Renderer {
 
   makeMesh(e) {
     const T = TYPES[e.type];
-    const g = BUILDERS[e.type](e.owner >= 0 ? TEAM[e.owner] : NEUTRAL);
-    g.traverse((m) => { if (m.isMesh) { m.castShadow = true; m.receiveShadow = true; } });
-    if (T.kind === 'unit') g.scale.setScalar(1.25); // a touch larger than their footprint, for readability
+    const inst = instantiate(e.type, e.owner);
+    let g;
+    if (inst) {
+      g = inst.object;
+    } else { // placeholder primitives if the model is missing
+      g = BUILDERS[e.type](e.owner >= 0 ? TEAM[e.owner] : NEUTRAL);
+      g.traverse((m) => { if (m.isMesh) { m.castShadow = true; m.receiveShadow = true; } });
+      if (T.kind === 'unit') g.scale.setScalar(1.25); // a touch larger than their footprint, for readability
+    }
     const root = new THREE.Group();
     root.add(g);
     const ring = new THREE.Mesh(this.ringGeo, new THREE.MeshBasicMaterial({ color: 0x4ade80, transparent: true, opacity: 0.9, depthWrite: false }));
@@ -272,7 +289,7 @@ export class Renderer {
     root.add(bar);
     root.position.set(e.x, 0, e.z);
     this.scene.add(root);
-    return { root, model: g, ring, bar, fg, kind: T.kind, phase: Math.random() * 10 };
+    return { root, model: g, ring, bar, fg, kind: T.kind, phase: Math.random() * 10, mixer: inst?.mixer, actions: inst?.actions, shootT: 0, state: '' };
   }
 
   sync(view, selected, dt) {
@@ -282,11 +299,13 @@ export class Renderer {
       if (!m) { m = this.makeMesh(e); this.meshes.set(id, m); }
       const T = TYPES[e.type];
       m.root.position.set(e.x, 0, e.z);
-      if (m.kind !== 'resource') m.model.rotation.y = e.rot;
+      // The "Side Shot" clip fires to the character's left, so turn a quarter while shooting to aim at the target.
+      if (m.kind !== 'resource') m.model.rotation.y = e.rot + (m.state === 'shoot' ? -Math.PI / 2 : 0);
       let y = 0;
-      if (e.type === 'worker' || e.type === 'tank') y = Math.sin(this.time * 3 + m.phase) * 0.08;
-      else if (m.kind === 'unit' && e.b === 1) y = Math.abs(Math.sin(this.time * 11 + m.phase)) * 0.12;
+      if (e.type === 'worker' || e.type === 'tank') y = 0.15 + Math.sin(this.time * 3 + m.phase) * 0.08;
+      else if (m.kind === 'unit' && e.b === 1 && !m.mixer) y = Math.abs(Math.sin(this.time * 11 + m.phase)) * 0.12;
       m.model.position.y = y;
+      if (m.mixer) this.animate(m, e, dt);
       if (m.kind === 'building') m.model.scale.y = e.a >= 1 ? 1 : 0.15 + 0.85 * e.a;
       if (e.type === 'crystal') m.model.scale.setScalar(0.55 + 0.45 * Math.min(1, e.hp / TYPES.crystal.amount));
 
@@ -313,6 +332,31 @@ export class Renderer {
     this.renderer.render(this.scene, this.camera);
   }
 
+  // Rigged infantry: walk while moving, crouch-and-fire on each shot, otherwise hold the first walk frame.
+  animate(m, e, dt) {
+    const A = m.actions;
+    m.shootT = Math.max(0, m.shootT - dt);
+    const want = m.shootT > 0 && A.shoot ? 'shoot' : e.b === 1 ? 'walk' : 'idle';
+    if (want !== m.state || m.restart) {
+      m.restart = false;
+      if (want === 'shoot') {
+        A.walk.stop();
+        A.shoot.reset();
+        A.shoot.setLoop(THREE.LoopOnce, 1);
+        A.shoot.clampWhenFinished = true;
+        A.shoot.timeScale = A.shoot.getClip().duration / SHOOT_TIME;
+        A.shoot.play();
+      } else {
+        if (A.shoot) A.shoot.stop();
+        A.walk.play();
+      }
+      m.state = want;
+    }
+    A.walk.timeScale = want === 'walk' ? 1.4 : 0;
+    if (want === 'idle') A.walk.time = 0;
+    m.mixer.update(dt);
+  }
+
   // ---------- effects ----------
 
   addFx(mesh, life, update) {
@@ -330,6 +374,8 @@ export class Renderer {
   }
 
   shot(ev) {
+    const shooter = this.meshes.get(ev.a);
+    if (shooter && shooter.actions && shooter.actions.shoot) { shooter.shootT = SHOOT_TIME; shooter.restart = true; }
     const from = new THREE.Vector3(ev.x, ev.k === 'turret' ? 1.3 : ev.k === 'tank' ? 1.4 : 1.0, ev.z);
     const to = new THREE.Vector3(ev.tx, 0.9, ev.tz);
     const dir = to.clone().sub(from);
@@ -388,7 +434,8 @@ export class Renderer {
   setGhost(kind) {
     if (this.ghost) { this.scene.remove(this.ghost); this.ghost = null; }
     if (!kind) return;
-    const g = BUILDERS[kind](TEAM[0]);
+    const inst = instantiate(kind, -1);
+    const g = inst ? inst.object : BUILDERS[kind](TEAM[0]);
     const mat = new THREE.MeshBasicMaterial({ color: 0x4ade80, transparent: true, opacity: 0.45, depthWrite: false });
     g.traverse((m) => { if (m.isMesh) m.material = mat; });
     g.userData.mat = mat;

@@ -7,8 +7,14 @@ import { Input } from './input.js';
 import { UI } from './ui.js';
 import { Bot } from './ai.js';
 import { HostNet, ClientNet } from './net.js';
+import { loadAssets } from './assets.js';
 
 const $ = (id) => document.getElementById(id);
+
+// Models start downloading right away, while the player is still in the menu.
+const assetsReady = loadAssets((f) => {
+  $('loading').textContent = f < 1 ? `Loading models… ${Math.round(f * 100)}%` : '';
+});
 const hex = (c) => '#' + c.toString(16).padStart(6, '0');
 const SNAP_EVERY = 2; // host sends every 2nd tick (10 Hz) to clients
 
@@ -120,7 +126,8 @@ document.querySelectorAll('[data-bots]').forEach((b) => b.addEventListener('clic
   document.querySelectorAll('[data-bots]').forEach((x) => x.classList.toggle('on', x === b));
 }));
 
-$('play').addEventListener('click', () => {
+$('play').addEventListener('click', async () => {
+  await assetsReady;
   const defs = [{ name: getName() }];
   for (let i = 0; i < botCount; i++) defs.push({ name: `${TEAM_NAMES[i + 1]} Bot`, isBot: true });
   startHost(defs, 0, null);
@@ -140,8 +147,9 @@ $('host').addEventListener('click', async () => {
   showLobby(true, net.code);
   net.onLobby = (slots) => renderLobby(slots, 0, true, net);
   net.broadcastLobby();
-  $('start').onclick = () => {
+  $('start').onclick = async () => {
     if (!net.canStart()) return;
+    await assetsReady;
     startHost(net.start(), 0, net);
   };
 });
@@ -154,7 +162,7 @@ $('join').addEventListener('click', async () => {
   const net = new ClientNet();
   let client = null;
   net.onLobby = (slots, you, c) => { showLobby(false, c); renderLobby(slots, you, false); };
-  net.onStart = (you) => { client = startClient(you, (cmd) => net.send(cmd)); window.game = client; };
+  net.onStart = (you) => assetsReady.then(() => { client = startClient(you, (cmd) => net.send(cmd)); window.game = client; });
   net.onSnap = (snap) => { if (client) client.view.push(snap, performance.now()); };
   net.onError = (msg) => { if (!client) { backToMenu(); menuError(msg); } };
   net.onClose = () => {

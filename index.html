@@ -57,6 +57,7 @@
   #topbar { position: fixed; top: 10px; right: 12px; display: flex; gap: 18px; padding: 6px 16px; background: var(--panel); border: 1px solid var(--edge); border-radius: 10px; font-size: 20px; font-weight: 700; z-index: 5; }
   #topbar .gem { color: #5eead4; }
   #topbar .dim { color: var(--dim); font-weight: 600; }
+  #mute { background: none; border: none; color: var(--text); font-size: 18px; padding: 0 0 0 4px; line-height: 1; }
   #message { position: fixed; top: 64px; left: 0; right: 0; text-align: center; font-size: 24px; font-weight: 700; text-shadow: 0 2px 6px #000; pointer-events: none; opacity: 0; z-index: 5; }
   #bottom { position: fixed; left: 0; right: 0; bottom: 0; display: flex; align-items: flex-end; gap: 10px; padding: 10px; pointer-events: none; z-index: 5; }
   #bottom > * { pointer-events: auto; background: var(--panel); border: 1px solid var(--edge); border-radius: 10px; }
@@ -100,7 +101,7 @@
 <div id="selbox"></div>
 
 <div id="hud" class="hidden">
-  <div id="topbar"><span><span class="gem">◆</span> <span id="crystals">0</span></span><span class="dim">POP <span id="pop">0</span></span><span class="dim" id="clock">0:00</span></div>
+  <div id="topbar"><span><span class="gem">◆</span> <span id="crystals">0</span></span><span class="dim">POP <span id="pop">0</span></span><span class="dim" id="clock">0:00</span><button id="mute" title="Sound on/off (M)"></button></div>
   <div id="message"></div>
   <div id="help" class="hidden">
     <b>Left-click / drag</b> select · <b>Shift</b> add<br>
@@ -111,7 +112,8 @@
     <b>Q W E</b> train units · click queue to cancel<br>
     <b>Ctrl+1-9</b> set group · <b>1-9</b> recall<br>
     <b>Space</b> center · <b>Tab</b> idle worker<br>
-    <b>Arrows / screen edge</b> pan · <b>Wheel</b> zoom
+    <b>Arrows / screen edge</b> pan · <b>Wheel</b> zoom<br>
+    <b>M</b> sound on/off
   </div>
   <div id="bottom">
     <canvas id="minimap" width="200" height="200"></canvas>

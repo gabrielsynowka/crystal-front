@@ -1,6 +1,7 @@
 // Mouse/keyboard controls: camera, selection, orders, build placement, control groups.
 import { TYPES } from './config.js';
 import { canPlace } from './sim.js';
+import { audio } from './audio.js';
 
 export class Input {
   constructor({ renderer, view, send, ui }) {
@@ -55,6 +56,10 @@ export class Input {
     if (!add) this.selected.clear();
     for (const id of ids) this.selected.add(id);
     this.ui.refresh();
+    if (ids.length) {
+      audio.play('click', { vol: 0.35 });
+      if (this.myUnits().some((u) => u.type !== 'worker')) audio.ack('select');
+    }
   }
 
   setMode(mode) {
@@ -195,6 +200,7 @@ export class Input {
     if (k === 'escape') { this.setMode(null); return; }
     if (k === ' ') { e.preventDefault(); this.centerSelection(); return; }
     if (k === 'f1') { e.preventDefault(); this.ui.toggleHelp(); return; }
+    if (k === 'm') { this.ui.toggleMute(); return; }
     if (k === 'tab') {
       e.preventDefault();
       const idle = [...this.view.ents.values()].filter((u) => u.owner === this.view.localId && u.type === 'worker' && u.b === 0 && !u.a);

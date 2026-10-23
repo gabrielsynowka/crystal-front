@@ -8,6 +8,16 @@ import { UI } from './ui.js';
 import { Bot } from './ai.js';
 import { HostNet, ClientNet } from './net.js';
 import { loadAssets } from './assets.js';
+import { audio } from './audio.js';
+import { TYPES } from './config.js';
+
+// Browsers only allow sound after a user gesture; the first click anywhere starts it.
+document.addEventListener('pointerdown', () => {
+  audio.unlock();
+  if (!audio.track) audio.playMusic('music_menu');
+}, { once: true });
+
+const SHOT_SFX = { soldier: 'rifle', ranger: 'ranger', tank: 'tank', turret: 'turret' };
 
 const $ = (id) => document.getElementById(id);
 
@@ -37,9 +47,18 @@ function startClient(localId, send) {
   ui.input = input;
   view.onEvent = (ev) => {
     ui.onEvent(ev);
-    if (ev.e === 'shot') renderer.shot(ev);
-    else if (ev.e === 'death') renderer.death(ev);
+    if (ev.e === 'shot') {
+      renderer.shot(ev);
+      if (SHOT_SFX[ev.k]) audio.at(SHOT_SFX[ev.k], ev.x, ev.z, { gap: ev.k === 'soldier' ? 0.07 : 0.12 });
+    } else if (ev.e === 'death') {
+      renderer.death(ev);
+      const kind = TYPES[ev.k] && TYPES[ev.k].kind;
+      if (kind === 'building') audio.at('explode_big', ev.x, ev.z, { vol: 0.8, max: 2 });
+      else if (kind === 'unit') audio.at('explode_small', ev.x, ev.z, { gap: 0.1 });
+    }
   };
+  audio.playMusic('music_battle');
+  Object.assign(audio.listener, { x: renderer.target.x, z: renderer.target.y, range: renderer.dist * 1.3 });
   let last = performance.now(), started = false;
   function frame(now) {
     const dt = Math.min(0.1, (now - last) / 1000);
@@ -50,6 +69,9 @@ function startClient(localId, send) {
       input.update(dt);
       ui.update(dt);
       renderer.sync(view, input.selected, dt);
+      audio.listener.x = renderer.target.x;
+      audio.listener.z = renderer.target.y;
+      audio.listener.range = renderer.dist * 1.3;
     }
     requestAnimationFrame(frame);
   }

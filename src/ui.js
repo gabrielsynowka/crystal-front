@@ -1,5 +1,6 @@
 // HUD: resources, selection panel, command card, minimap, messages, end screen.
 import { TYPES, TYPE_LIST, TEAM_COLORS, MAP_SIZE, POP_CAP, BUILDABLE } from './config.js';
+import { audio } from './audio.js';
 
 const hex = (c) => '#' + c.toString(16).padStart(6, '0');
 const $ = (id) => document.getElementById(id);
@@ -27,6 +28,8 @@ export class UI {
       if (s) this.input.select([+s.dataset.sel]);
     });
     $('hud').classList.remove('hidden');
+    $('mute').textContent = audio.muted ? '🔇' : '🔊';
+    $('mute').addEventListener('click', () => this.toggleMute());
   }
 
   // ---------- command card ----------
@@ -72,7 +75,7 @@ export class UI {
       const el = document.createElement('button');
       el.className = 'cmd';
       el.innerHTML = `<span class="hk">${b.key}</span><span class="lbl">${b.label}</span>${b.cost ? `<span class="cost">◆ ${b.cost}</span>` : ''}`;
-      el.addEventListener('click', b.run);
+      el.addEventListener('click', () => { audio.play('click', { vol: 0.4 }); b.run(); });
       b.el = el;
       card.appendChild(el);
     }
@@ -96,14 +99,27 @@ export class UI {
 
   toggleHelp() { $('help').classList.toggle('hidden'); }
 
+  toggleMute() {
+    audio.setMuted(!audio.muted);
+    $('mute').textContent = audio.muted ? '🔇' : '🔊';
+  }
+
   onEvent(ev) {
     const me = this.view.localId;
     if (ev.e === 'left') { this.message(`${ev.name.replace(' (bot)', '')} left — a bot takes over`, '#c4b5fd'); return; }
     if (ev.e === 'elim' && ev.o !== me && this.view.players[ev.o]) { this.message(`${this.view.players[ev.o].name} has been eliminated`, '#c4b5fd'); return; }
     if (ev.o !== me) return;
-    if (ev.e === 'err') this.message(ev.msg, '#fca5a5');
-    else if (ev.e === 'alert') this.message('We are under attack!', '#f87171');
-    else if (ev.e === 'built') this.message(`${TYPES[ev.k].name} complete`, '#86efac');
+    if (ev.e === 'err') {
+      this.message(ev.msg, '#fca5a5');
+      audio.voice(ev.msg.startsWith('Not enough') ? 'nocrystals' : ev.msg.startsWith('Population') ? 'popcap' : '');
+    } else if (ev.e === 'alert') { this.message('We are under attack!', '#f87171'); audio.voice('attack'); }
+    else if (ev.e === 'built') { this.message(`${TYPES[ev.k].name} complete`, '#86efac'); audio.voice('built'); }
+    else if (ev.e === 'trained') audio.voice('unit_ready');
+    else if (ev.e === 'place') audio.at('place', ev.x, ev.z, { vol: 0.7 });
+    else if (ev.e === 'ack') {
+      if (ev.k === 'gather') audio.play('mine', { vol: 0.5 });
+      else audio.ack(ev.k === 'move' ? 'move' : 'attack');
+    }
     else if (ev.e === 'elim') this.message('Our HQ has been destroyed', '#f87171');
   }
 
@@ -210,6 +226,7 @@ export class UI {
 
   showEnd(text, win) {
     this.ended = true;
+    if (text === 'VICTORY' || text === 'DEFEAT') audio.voice(win ? 'victory' : 'defeat');
     $('endtitle').textContent = text;
     $('endtitle').className = win ? 'win' : 'lose';
     $('end').classList.remove('hidden');
